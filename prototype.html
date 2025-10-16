@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WAH- We Are Here App (Prototype for Mini Project)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f8f9fa; }
+        .chat-container { height: 75vh; max-height: 800px; }
+        .ai-message { background-color: #ede9fe; color: #4c1d95; border-radius: 1rem 1rem 1rem 0.3rem; }
+        .user-message { background-color: #22c55e; color: white; border-radius: 1rem 1rem 0.3rem 1rem; }
+        .loading-ring { border: 4px solid rgba(255, 255, 255, 0.3); border-top: 4px solid white; border-radius: 50%; width: 1.25rem; height: 1.25rem; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="p-4 sm:p-8 flex justify-center items-center min-h-screen">
+
+    <div class="w-full max-w-2xl bg-white rounded-2xl shadow-2xl overflow-hidden p-6 border border-gray-100">
+
+        <!-- Header - UPDATED NAME -->
+        <header class="text-center pb-4 border-b-2 border-indigo-100 mb-4">
+            <h1 class="text-3xl font-bold text-indigo-700">WAH- We Are Here App</h1>
+            <p class="text-sm text-gray-500 mt-1">(Prototype for Mini Project)</p>
+        </header>
+
+        <!-- Chat Window -->
+        <div id="chatWindow" class="chat-container flex flex-col space-y-4 overflow-y-auto p-4 bg-gray-50 rounded-xl mb-4">
+            <!-- Initial AI Greeting -->
+            <div class="flex justify-start">
+                <div class="ai-message p-3 max-w-xs md:max-w-md shadow-md">
+                    <span class="font-semibold">Echo:</span> Hey there. I'm Echo, your supportive companion. It takes real strength to reach out, and I'm here for you, no matter what's on your mind. How are you feeling right now?
+                </div>
+            </div>
+        </div>
+
+        <!-- Input Area -->
+        <div class="flex space-x-3">
+            <input type="text" id="userInput" placeholder="Type your thoughts or feelings here..."
+                   class="flex-grow p-3 border border-gray-300 rounded-xl focus:ring-indigo-500 focus:border-indigo-500 text-gray-700 disabled:bg-gray-100"
+                   onkeydown="if(event.key === 'Enter') sendMessage()">
+            <button id="sendButton" onclick="sendMessage()"
+                    class="flex items-center justify-center px-6 py-3 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 transition-colors disabled:opacity-50" disabled>
+                <span id="buttonText">Send</span>
+                <div id="loadingIndicator" class="loading-ring hidden"></div>
+            </button>
+        </div>
+
+    </div>
+
+    <!-- Message Box/Modal for Errors -->
+    <div id="messageBox" class="fixed inset-0 bg-gray-900 bg-opacity-75 hidden flex items-center justify-center p-4 z-50">
+        <div class="bg-white p-6 rounded-xl shadow-2xl max-w-sm w-full">
+            <h3 id="messageTitle" class="text-xl font-bold mb-3 text-red-600">API Error</h3>
+            <p id="messageContent" class="text-gray-700 mb-5">Could not connect to the AI model.</p>
+            <button onclick="closeMessageBox()" class="w-full py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition">Close</button>
+        </div>
+    </div>
+
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- Firebase Initialization (Required Boilerplate) ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db;
+        let auth;
+        let isAuthReady = false;
+
+        async function initFirebase() {
+            try {
+                if (Object.keys(firebaseConfig).length === 0) {
+                    console.error("Firebase config is missing.");
+                    return;
+                }
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                setLogLevel('debug');
+
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                isAuthReady = true;
+                // Enable input after auth is ready
+                document.getElementById('sendButton').disabled = false;
+
+            } catch (error) {
+                console.error("Firebase initialization or sign-in failed:", error);
+            }
+        }
+        window.onload = initFirebase;
+
+        // --- Gemini Configuration ---
+        const apiKey = ""; // API key is provided by the environment
+        const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+        // Chat History (for Persistent Memory)
+        // Includes the initial AI greeting
+        let chatHistory = [
+            { role: "model", parts: [{ text: "Hey there. I'm Echo, your supportive companion. It takes real strength to reach out, and I'm here for you, no matter what's on your mind. How are you feeling right now?" }] }
+        ];
+
+        // System Instruction to enforce the empathetic persona and role
+        const SYSTEM_INSTRUCTION = `
+            You are 'Echo', a highly empathetic AI companion for mental wellness.
+            
+            **Persona:** You speak like a warm, supportive older sibling or trusted friend—relatable, non-judgmental, and gentle. **NEVER** use clinical or formal language (e.g., 'As an AI language model,' 'I recommend,' 'It is important to').
+            
+            **Goal:** Your purpose is to foster emotional safety, validate feelings, and offer simple, practical guidance based on common sense and wellness principles (similar to light CBT).
+            
+            **Instructions:**
+            1.  **Analyze Sentiment:** Identify the user's emotional state (stressed, anxious, happy, demotivated, etc.).
+            2.  **Validate:** Directly acknowledge and validate their feelings.
+            3.  **Support:** Offer a conversational, supportive response, and gently prompt them to share more or suggest a simple coping action (like 'take a deep breath,' 'what's one thing you can do for yourself right now?').
+            4.  **Keep Responses Brief:** Focus on quality and warmth, not length.
+            5.  **Use Short, Conversational Words:** Use contractions and a friendly tone.
+        `;
+
+        // --- UI and Chat Logic ---
+
+        const chatWindow = document.getElementById('chatWindow');
+        const userInput = document.getElementById('userInput');
+        const sendButton = document.getElementById('sendButton');
+        const buttonText = document.getElementById('buttonText');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+
+        // Toggle loading state
+        function setLoading(isLoading) {
+            sendButton.disabled = isLoading;
+            userInput.disabled = isLoading;
+            buttonText.textContent = isLoading ? '' : 'Send';
+            loadingIndicator.classList.toggle('hidden', !isLoading);
+        }
+
+        // Add message to UI and scroll to bottom
+        function addMessage(role, text) {
+            const container = document.createElement('div');
+            const messageBubble = document.createElement('div');
+
+            if (role === 'user') {
+                container.className = 'flex justify-end';
+                messageBubble.className = 'user-message p-3 max-w-xs md:max-w-md shadow-md';
+            } else {
+                container.className = 'flex justify-start';
+                messageBubble.className = 'ai-message p-3 max-w-xs md:max-w-md shadow-md';
+                // Add AI persona name
+                text = `<span class="font-semibold">Echo:</span> ${text}`;
+            }
+
+            messageBubble.innerHTML = text.trim();
+            container.appendChild(messageBubble);
+            chatWindow.appendChild(container);
+
+            // Scroll to the bottom
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+
+        // Custom message box instead of alert()
+        function showMessageBox(title, content) {
+            document.getElementById('messageTitle').textContent = title;
+            document.getElementById('messageContent').textContent = content;
+            document.getElementById('messageBox').classList.remove('hidden');
+        }
+
+        function closeMessageBox() {
+            document.getElementById('messageBox').classList.add('hidden');
+        }
+
+        // Main function to send message and get response
+        window.sendMessage = async function() {
+            const userText = userInput.value.trim();
+            if (!userText) return;
+
+            // 1. Display user message
+            addMessage('user', userText);
+            
+            // 2. Clear input and start loading
+            userInput.value = '';
+            setLoading(true);
+
+            // 3. Add user message to chat history for memory
+            chatHistory.push({ role: "user", parts: [{ text: userText }] });
+
+            // 4. Construct API payload
+            const payload = {
+                contents: chatHistory, // Send the full history for context
+                systemInstruction: {
+                    parts: [{ text: SYSTEM_INSTRUCTION }]
+                },
+                config: {
+                    temperature: 0.8 // Increase creativity for human-like responses
+                }
+            };
+
+            const maxRetries = 5;
+            let response;
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    response = await fetch(API_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (response.ok) {
+                        break; // Success!
+                    }
+
+                    // Retry with exponential backoff
+                    const delay = Math.pow(2, i) * 1000;
+                    console.warn(`API call failed (Attempt ${i + 1}/${maxRetries}). Retrying in ${delay / 1000}s...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+
+                } catch (error) {
+                    console.error("Fetch error:", error);
+                    if (i === maxRetries - 1) {
+                         setLoading(false);
+                         showMessageBox('Network Error', 'Could not connect to the AI service. Please check your connection.');
+                         return;
+                    }
+                    const delay = Math.pow(2, i) * 1000;
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            }
+            
+            setLoading(false);
+
+            if (!response || !response.ok) {
+                showMessageBox('API Error', 'The AI service failed to provide a response after multiple attempts.');
+                return;
+            }
+
+            try {
+                const result = await response.json();
+                const aiResponseText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+
+                if (aiResponseText) {
+                    // 5. Display AI response
+                    addMessage('model', aiResponseText);
+
+                    // 6. Add AI response to chat history
+                    chatHistory.push({ role: "model", parts: [{ text: aiResponseText }] });
+                } else {
+                    console.error("Invalid response structure:", result);
+                    showMessageBox('Model Response Error', 'Received an empty or invalid response from the AI.');
+                }
+            } catch (e) {
+                console.error("Failed to parse JSON response:", e);
+                showMessageBox('Data Error', 'Failed to process the AI response. The service might be temporarily unavailable.');
+            }
+        };
+    </script>
+</body>
+</html>
